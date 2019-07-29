@@ -30,6 +30,9 @@
 #include <linux/task_io_accounting_ops.h>
 #include <linux/dax.h>
 #include <linux/sched/signal.h>
+#ifdef CONFIG_AIOS
+#include <linux/lbio.h>
+#endif
 
 #include "internal.h"
 
@@ -62,7 +65,7 @@ iomap_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
 	 * the data into the page cache pages, then we cannot fail otherwise we
 	 * expose transient stale data. If the reserve fails, we can safely
 	 * back out at this point as there is nothing to undo.
-	 */
+	 */+
 	ret = ops->iomap_begin(inode, pos, length, flags, &iomap);
 	if (ret)
 		return ret;
@@ -280,6 +283,7 @@ iomap_read_end_io(struct bio *bio)
 	bio_put(bio);
 }
 
+
 struct iomap_readpage_ctx {
 	struct page		*cur_page;
 	bool			cur_page_in_bio;
@@ -429,6 +433,283 @@ iomap_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
 
 	return NULL;
 }
+
+#ifdef CONFIG_AIOS
+struct iomap_AIOS_readpage_ctx {
+	struct page		*cur_page;
+	bool			cur_page_in_lbio;
+	bool			is_readahead;
+	struct lbio		*lbio;
+	struct list_head	*pages;
+};
+
+int
+iomap_AIOS_readpages(struct address_space *mapping, struct list_head *pages,
+		unsigned nr_pages, const struct iomap_ops *ops, void **lbio)
+{
+	struct iomap_AIOS_readpage_ctx ctx = {
+		.pages		= pages,
+		.is_readahead	= true,
+	};
+	loff_t pos = page_offset(list_entry(pages->prev, struct page, lru));
+	loff_t last = page_offset(list_entry(pages->next, struct page, lru));
+	loff_t length = last - pos + PAGE_SIZE, ret = 0;
+
+	while (length > 0) {
+		ret = iomap_AIOS_apply(mapping->host, pos, length, 0, ops,
+				&ctx, iomap_AIOS_readpages_actor, (void *)&lbio);
+		if (ret <= 0) {
+			WARN_ON_ONCE(ret == 0);
+			goto done;
+		}
+		pos += ret;
+		length -= ret;
+	}
+	ret = 0;
+done:
+	if (ctx.cur_page) {
+		if (!ctx.cur_page_in_lbio)
+			unlock_page(ctx.cur_page);
+		put_page(ctx.cur_page);
+	}
+
+	/*
+	 * Check that we didn't lose a page due to the arcance calling
+	 * conventions..
+	 */
+	WARN_ON_ONCE(!ret && !list_empty(ctx.pages));
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iomap_AIOS_readpages);
+
+loff_t
+iomap_AIOS_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
+		const struct iomap_ops *ops, void *data, iomap_actor_t actor, void **lbio)
+{
+	struct iomap iomap = { 0 };
+	loff_t written = 0, ret;
+
+	/*
+	 * Need to map a range from start position for length bytes. This can
+	 * span multiple pages - it is only guaranteed to return a range of a
+	 * single type of pages (e.g. all into a hole, all mapped or all
+	 * unwritten). Failure at this point has nothing to undo.
+	 *
+	 * If allocation is required for this range, reserve the space now so
+	 * that the allocation is guaranteed to succeed later on. Once we copy
+	 * the data into the page cache pages, then we cannot fail otherwise we
+	 * expose transient stale data. If the reserve fails, we can safely
+	 * back out at this point as there is nothing to undo.
+	 */
+	ret = ops->iomap_begin(inode, pos, length, flags, &iomap);
+	if (ret)
+		return ret;
+	if (WARN_ON(iomap.offset > pos))
+		return -EIO;
+	if (WARN_ON(iomap.length == 0))
+		return -EIO;
+
+	/*
+	 * Cut down the length to the one actually provided by the filesystem,
+	 * as it might not be able to give us the whole size that we requested.
+	 */
+	if (iomap.offset + iomap.length < pos + length)
+		length = iomap.offset + iomap.length - pos;
+
+	/*
+	 * Now that we have guaranteed that the space allocation will succeed.
+	 * we can do the copy-in page by page without having to worry about
+	 * failures exposing transient data.
+	 */
+	written = actor(inode, pos, length, data, &iomap, (void *)&lbio);
+
+	/*
+	 * Now the data has been copied, commit the range we've copied.  This
+	 * should not fail unless the filesystem has had a fatal error.
+	 */
+	if (ops->iomap_end) {
+		ret = ops->iomap_end(inode, pos, length,
+				     written > 0 ? written : 0,
+				     flags, &iomap);
+	}
+
+	return written ? written : ret;
+}
+
+static loff_t
+iomap_AIOS_readpages_actor(struct inode *inode, loff_t pos, loff_t length,
+		void *data, struct iomap *iomap, void **lbio)
+{
+	struct iomap_AIOS_readpage_ctx *ctx = data;
+	loff_t done, ret;
+
+	for (done = 0; done < length; done += ret) {
+		if (ctx->cur_page && offset_in_page(pos + done) == 0) {
+			if (!ctx->cur_page_in_lbio)
+				unlock_page(ctx->cur_page);
+			put_page(ctx->cur_page);
+			ctx->cur_page = NULL;
+		}
+		if (!ctx->cur_page) {
+			ctx->cur_page = iomap_AIOS_next_page(inode, ctx->pages,
+					pos, length, &done);
+			if (!ctx->cur_page)
+				break;
+			ctx->cur_page_in_lbio = false;
+		}
+		ret = iomap_AIOS_readpage_actor(inode, pos + done, length - done,
+				ctx, iomap, (void *)&lbio);
+	}
+
+	return done;
+}
+
+static loff_t
+iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *data,
+		struct iomap *iomap, void **ret_lbio)
+{
+	struct iomap_AIOS_readpage_ctx *ctx = data;
+	struct lbio *first_lbio = NULL;
+	struct lbio *last_lbio = NULL;
+
+	struct page *page = ctx->cur_page;
+	struct iomap_page *iop = iomap_page_create(inode, page);
+	bool is_contig = false;
+	loff_t orig_pos = pos;
+	unsigned poff, plen;
+	sector_t sector;
+
+	if (iomap->type == IOMAP_INLINE) {
+		WARN_ON_ONCE(pos);
+		iomap_read_inline_data(inode, page, iomap);
+		return PAGE_SIZE;
+	}
+
+	/* zero post-eof blocks as the page may be mapped */
+	iomap_adjust_read_range(inode, iop, &pos, length, &poff, &plen);
+	if (plen == 0)
+		goto done;
+
+	if (iomap->type != IOMAP_MAPPED || pos >= i_size_read(inode)) {
+		zero_user(page, poff, plen);
+		iomap_set_range_uptodate(page, poff, plen);
+		goto done;
+	}
+
+	ctx->cur_page_in_lbio = true;
+
+	/*
+	 * Try to merge into a previous segment if we can.
+	 */
+	sector = iomap_sector(iomap, pos);
+	if (ctx->lbio && bio_end_sector(ctx->lbio) == sector) {
+		is_contig = true;
+	}
+
+	/*
+	 * If we start a new segment we need to increase the read count, and we
+	 * need to do so before submitting any previous full bio to make sure
+	 * that we don't prematurely unlock the page.
+	 */
+	if (iop)
+		atomic_inc(&iop->read_count);
+
+	if (!ctx->lbio || !is_contig) {
+		gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
+		int nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+		if (ctx->is_readahead) /* same as readahead_gfp_mask */
+			gfp |= __GFP_NORETRY | __GFP_NOWARN;
+
+		if (!last_lbio){
+			last_lbio = lbio_alloc(gfp, min(BIO_MAX_PAGES, nr_vecs));
+			if (!first_lbio) {
+				first_lbio = last_lbio;
+				list_add_tail(&first_lbio->list, &current->plug->lbio_list);			
+			}
+		} else {
+alloc_next_lbio:
+			last_lbio->next =
+				lbio_alloc(gfp, min(BIO_MAX_PAGES, nr_vecs));
+			last_lbio = last_lbio->next;		
+		}
+		BUG_ON(!last_lbio);
+		ctx->lbio = last_lbio;
+		ctx->lbio->bi_opf = REQ_OP_READ;
+		if (ctx->is_readahead)
+			ctx->lbio->bi_opf |= REQ_RAHEAD;
+		ctx->lbio->bi_iter.bi_sector = sector;
+		ctx->lbio->bi_end_io = iomap_AIOS_read_end_io;
+		if (bdev->bd_partno) {
+			struct hd_struct *p;
+			rcu_read_lock();
+			p = __disk_get_part(bdev->bd_disk, bdev->bd_partno);
+			lbio->sector += p->start_sect;
+			rcu_read_unlock();
+		}
+
+	}
+
+	if(!lbio_add_page(ctx->lbio, page))
+		goto alloc_next_lbio; 
+done:
+	/*
+	 * Move the caller beyond our range so that it keeps making progress.
+	 * For that we have to include any leading non-uptodate ranges, but
+	 * we can skip trailing ones as they will be handled in the next
+	 * iteration.
+	 */
+	*ret_lbio = (void *)first_lbio;
+
+	return pos - orig_pos + plen;
+}
+
+static struct page *
+iomap_AIOS_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
+		loff_t length, loff_t *done)
+{
+	while (!list_empty(pages)) {
+		struct page *page = lru_to_page(pages);
+
+		if (page_offset(page) >= (u64)pos + length)
+			break;
+
+		list_del(&page->lru);
+
+		return page;
+
+		/*
+		 * If we already have a page in the page cache at index we are
+		 * done.  Upper layers don't care if it is uptodate after the
+		 * readpages call itself as every page gets checked again once
+		 * actually needed.nn
+		 */
+	}
+
+	return NULL;
+}
+
+static void
+iomap_AIOS_read_end_io(struct lbio *lbio)
+{
+	int i;
+
+	for(i = 0; i < lbio->vcnt; ++i) {
+		struct lbio_vec *bv = &lbio->vec[i];
+		struct page *page = bv->page;
+		struct iomap_page *iop = to_iomap_page(page);
+	
+		if(!lbio->status) {
+			iomap_set_range_uptodate(page, bv->bv_offset, bv->bv_len);
+		} else {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		}
+
+		iomap_read_finish(iop, page);
+	}	
+}
+#endif
 
 static loff_t
 iomap_readpages_actor(struct inode *inode, loff_t pos, loff_t length,

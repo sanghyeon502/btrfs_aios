@@ -22,6 +22,9 @@
 #include "xfs_bmap_btree.h"
 #include "xfs_reflink.h"
 #include <linux/writeback.h>
+#ifdef	CONFIG_AIOS
+#include <linux/lbio.h>
+#endif
 
 /*
  * structure owned by writepages passed to individual writepage calls
@@ -1008,6 +1011,20 @@ xfs_vm_readpages(
 	return iomap_readpages(mapping, pages, nr_pages, &xfs_iomap_ops);
 }
 
+#ifdef CONFIG_AIOS
+STATIC int
+xfs_AIOS_vm_readpages(
+	struct file		*unused,
+	struct address_space	*mapping,
+	struct list_head	*pages,
+	unsigned		nr_pages,
+	void 			**lbio)
+{
+	trace_xfs_vm_readpages(mapping->host, nr_pages);
+	return iomap_AIOS_readpages(mappng, pages, nr_pages, &xfs_iomap_ops, lbio);
+}
+#endif
+
 static int
 xfs_iomap_swapfile_activate(
 	struct swap_info_struct		*sis,
@@ -1021,6 +1038,9 @@ xfs_iomap_swapfile_activate(
 const struct address_space_operations xfs_address_space_operations = {
 	.readpage		= xfs_vm_readpage,
 	.readpages		= xfs_vm_readpages,
+#ifdef CONFIG_AIOS
+	.AIOS_readpages		= xfs_AIOS_vm_readpages,
+#endif
 	.writepage		= xfs_vm_writepage,
 	.writepages		= xfs_vm_writepages,
 	.set_page_dirty		= iomap_set_page_dirty,
