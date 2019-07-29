@@ -1021,7 +1021,7 @@ xfs_AIOS_vm_readpages(
 	void 			**lbio)
 {
 	trace_xfs_vm_readpages(mapping->host, nr_pages);
-	return iomap_AIOS_readpages(mappng, pages, nr_pages, &xfs_iomap_ops, lbio);
+	return iomap_AIOS_readpages(mappng, pages, nr_pages, &xfs_iomap_ops, (void *)&lbio);
 }
 #endif
 
