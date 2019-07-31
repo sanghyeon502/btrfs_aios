@@ -1,0 +1,93 @@
+  CC [M]  fs/xfs/xfs_refcount_item.o
+  CC [M]  fs/xfs/xfs_qm.o
+  CC      fs/iomap.o
+fs/iomap.c: In function ‘iomap_AIOS_readpages’:
+fs/iomap.c:460:11: error: ‘iomap_AIOS_readpages_actor’ undeclared (first use in this function); did you mean ‘iomap_AIOS_readpage_ctx’?
+     &ctx, iomap_AIOS_readpages_actor, (void *)&lbio);
+           ^~~~~~~~~~~~~~~~~~~~~~~~~~
+           iomap_AIOS_readpage_ctx
+fs/iomap.c:460:11: note: each undeclared identifier is reported only once for each function it appears in
+fs/iomap.c: In function ‘iomap_AIOS_apply’:
+fs/iomap.c:524:12: error: too many arguments to function ‘actor’
+  written = actor(inode, pos, length, data, &iomap, (void *)&lbio);
+            ^~~~~
+fs/iomap.c: In function ‘iomap_AIOS_readpages_actor’:
+fs/iomap.c:554:20: error: implicit declaration of function ‘iomap_AIOS_next_page’; did you mean ‘iomap_next_page’? [-Werror=implicit-function-declaration]
+    ctx->cur_page = iomap_AIOS_next_page(inode, ctx->pages,
+                    ^~~~~~~~~~~~~~~~~~~~
+                    iomap_next_page
+fs/iomap.c:554:18: warning: assignment makes pointer from integer without a cast [-Wint-conversion]
+    ctx->cur_page = iomap_AIOS_next_page(inode, ctx->pages,
+                  ^
+fs/iomap.c:560:9: error: implicit declaration of function ‘iomap_AIOS_readpage_actor’; did you mean ‘iomap_AIOS_readpages_actor’? [-Werror=implicit-function-declaration]
+   ret = iomap_AIOS_readpage_actor(inode, pos + done, length - done,
+         ^~~~~~~~~~~~~~~~~~~~~~~~~
+         iomap_AIOS_readpages_actor
+fs/iomap.c: In function ‘iomap_AIOS_read_end_io’:
+fs/iomap.c:578:37: error: ‘struct lbio_vec’ has no member named ‘bv_offset’
+    iomap_set_range_uptodate(page, bv->bv_offset, bv->bv_len);
+                                     ^~
+fs/iomap.c:578:52: error: ‘struct lbio_vec’ has no member named ‘bv_len’
+    iomap_set_range_uptodate(page, bv->bv_offset, bv->bv_len);
+                                                    ^~
+fs/iomap.c: At top level:
+fs/iomap.c:589:1: error: conflicting types for ‘iomap_AIOS_readpage_actor’
+ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *data,
+ ^~~~~~~~~~~~~~~~~~~~~~~~~
+fs/iomap.c:560:9: note: previous implicit declaration of ‘iomap_AIOS_readpage_actor’ was here
+   ret = iomap_AIOS_readpage_actor(inode, pos + done, length - done,
+         ^~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from ./include/linux/writeback.h:184:0,
+                 from ./include/linux/memcontrol.h:31,
+                 from ./include/linux/swap.h:9,
+                 from ./include/linux/mm_inline.h:6,
+                 from fs/iomap.c:22:
+fs/iomap.c: In function ‘iomap_AIOS_readpage_actor’:
+./include/linux/bio.h:71:55: error: ‘struct lbio’ has no member named ‘bi_iter’
+ #define bio_end_sector(bio) bvec_iter_end_sector((bio)->bi_iter)
+                                                       ^
+./include/linux/bio.h:68:38: note: in definition of macro ‘bvec_iter_end_sector’
+ #define bvec_iter_end_sector(iter) ((iter).bi_sector + bvec_iter_sectors((iter)))
+                                      ^~~~
+fs/iomap.c:626:19: note: in expansion of macro ‘bio_end_sector’
+  if (ctx->lbio && bio_end_sector(ctx->lbio) == sector) {
+                   ^~~~~~~~~~~~~~
+./include/linux/bio.h:71:55: error: ‘struct lbio’ has no member named ‘bi_iter’
+ #define bio_end_sector(bio) bvec_iter_end_sector((bio)->bi_iter)
+                                                       ^
+./include/linux/bio.h:67:35: note: in definition of macro ‘bvec_iter_sectors’
+ #define bvec_iter_sectors(iter) ((iter).bi_size >> 9)
+                                   ^~~~
+./include/linux/bio.h:71:29: note: in expansion of macro ‘bvec_iter_end_sector’
+ #define bio_end_sector(bio) bvec_iter_end_sector((bio)->bi_iter)
+                             ^~~~~~~~~~~~~~~~~~~~
+fs/iomap.c:626:19: note: in expansion of macro ‘bio_end_sector’
+  if (ctx->lbio && bio_end_sector(ctx->lbio) == sector) {
+                   ^~~~~~~~~~~~~~
+fs/iomap.c:662:12: error: ‘struct lbio’ has no member named ‘bi_iter’
+   ctx->lbio->bi_iter.bi_sector = sector;
+            ^~
+fs/iomap.c:667:24: error: ‘bdev’ undeclared (first use in this function); did you mean ‘cdev’?
+    p = __disk_get_part(bdev->bd_disk, bdev->bd_partno);
+                        ^~~~
+                        cdev
+fs/iomap.c:668:4: error: ‘lbio’ undeclared (first use in this function)
+    lbio->sector += p->start_sect;
+    ^~~~
+fs/iomap.c: At top level:
+fs/iomap.c:689:1: error: conflicting types for ‘iomap_AIOS_next_page’
+ iomap_AIOS_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
+ ^~~~~~~~~~~~~~~~~~~~
+fs/iomap.c:554:20: note: previous implicit declaration of ‘iomap_AIOS_next_page’ was here
+    ctx->cur_page = iomap_AIOS_next_page(inode, ctx->pages,
+                    ^~~~~~~~~~~~~~~~~~~~
+fs/iomap.c:689:1: warning: ‘iomap_AIOS_next_page’ defined but not used [-Wunused-function]
+ iomap_AIOS_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
+ ^~~~~~~~~~~~~~~~~~~~
+fs/iomap.c:589:1: warning: ‘iomap_AIOS_readpage_actor’ defined but not used [-Wunused-function]
+ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *data,
+ ^~~~~~~~~~~~~~~~~~~~~~~~~
+fs/iomap.c:540:1: warning: ‘iomap_AIOS_readpages_actor’ defined but not used [-Wunused-function]
+ iomap_AIOS_readpages_actor(struct inode *inode, loff_t pos, loff_t length,
+ ^~~~~~~~~~~~~~~~~~~~~~~~~~
+

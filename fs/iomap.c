@@ -440,129 +440,10 @@ struct iomap_AIOS_readpage_ctx {
 	bool			cur_page_in_lbio;
 	bool			is_readahead;
 	struct lbio		*lbio;
+	struct lbio		*first_lbio;
+	struct lbio		*last_lbio;
 	struct list_head	*pages;
 };
-
-int
-iomap_AIOS_readpages(struct address_space *mapping, struct list_head *pages,
-		unsigned nr_pages, const struct iomap_ops *ops, void **lbio)
-{
-	struct iomap_AIOS_readpage_ctx ctx = {
-		.pages		= pages,
-		.is_readahead	= true,
-	};
-	loff_t pos = page_offset(list_entry(pages->prev, struct page, lru));
-	loff_t last = page_offset(list_entry(pages->next, struct page, lru));
-	loff_t length = last - pos + PAGE_SIZE, ret = 0;
-
-	while (length > 0) {
-		ret = iomap_AIOS_apply(mapping->host, pos, length, 0, ops,
-				&ctx, iomap_AIOS_readpages_actor, (void *)&lbio);
-		if (ret <= 0) {
-			WARN_ON_ONCE(ret == 0);
-			goto done;
-		}
-		pos += ret;
-		length -= ret;
-	}
-	ret = 0;
-done:
-	if (ctx.cur_page) {
-		if (!ctx.cur_page_in_lbio)
-			unlock_page(ctx.cur_page);
-		put_page(ctx.cur_page);
-	}
-
-	/*
-	 * Check that we didn't lose a page due to the arcance calling
-	 * conventions..
-	 */
-	WARN_ON_ONCE(!ret && !list_empty(ctx.pages));
-	return ret;
-}
-EXPORT_SYMBOL_GPL(iomap_AIOS_readpages);
-
-loff_t
-iomap_AIOS_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
-		const struct iomap_ops *ops, void *data, iomap_actor_t actor, void **lbio)
-{
-	struct iomap iomap = { 0 };
-	loff_t written = 0, ret;
-
-	/*
-	 * Need to map a range from start position for length bytes. This can
-	 * span multiple pages - it is only guaranteed to return a range of a
-	 * single type of pages (e.g. all into a hole, all mapped or all
-	 * unwritten). Failure at this point has nothing to undo.
-	 *
-	 * If allocation is required for this range, reserve the space now so
-	 * that the allocation is guaranteed to succeed later on. Once we copy
-	 * the data into the page cache pages, then we cannot fail otherwise we
-	 * expose transient stale data. If the reserve fails, we can safely
-	 * back out at this point as there is nothing to undo.
-	 */
-	ret = ops->iomap_begin(inode, pos, length, flags, &iomap);
-	if (ret)
-		return ret;
-	if (WARN_ON(iomap.offset > pos))
-		return -EIO;
-	if (WARN_ON(iomap.length == 0))
-		return -EIO;
-
-	/*
-	 * Cut down the length to the one actually provided by the filesystem,
-	 * as it might not be able to give us the whole size that we requested.
-	 */
-	if (iomap.offset + iomap.length < pos + length)
-		length = iomap.offset + iomap.length - pos;
-
-	/*
-	 * Now that we have guaranteed that the space allocation will succeed.
-	 * we can do the copy-in page by page without having to worry about
-	 * failures exposing transient data.
-	 */
-	written = actor(inode, pos, length, data, &iomap, (void *)&lbio);
-
-	/*
-	 * Now the data has been copied, commit the range we've copied.  This
-	 * should not fail unless the filesystem has had a fatal error.
-	 */
-	if (ops->iomap_end) {
-		ret = ops->iomap_end(inode, pos, length,
-				     written > 0 ? written : 0,
-				     flags, &iomap);
-	}
-
-	return written ? written : ret;
-}
-
-static loff_t
-iomap_AIOS_readpages_actor(struct inode *inode, loff_t pos, loff_t length,
-		void *data, struct iomap *iomap, void **lbio)
-{
-	struct iomap_AIOS_readpage_ctx *ctx = data;
-	loff_t done, ret;
-
-	for (done = 0; done < length; done += ret) {
-		if (ctx->cur_page && offset_in_page(pos + done) == 0) {
-			if (!ctx->cur_page_in_lbio)
-				unlock_page(ctx->cur_page);
-			put_page(ctx->cur_page);
-			ctx->cur_page = NULL;
-		}
-		if (!ctx->cur_page) {
-			ctx->cur_page = iomap_AIOS_next_page(inode, ctx->pages,
-					pos, length, &done);
-			if (!ctx->cur_page)
-				break;
-			ctx->cur_page_in_lbio = false;
-		}
-		ret = iomap_AIOS_readpage_actor(inode, pos + done, length - done,
-				ctx, iomap, (void *)&lbio);
-	}
-
-	return done;
-}
 
 static void
 iomap_AIOS_read_end_io(struct lbio *lbio)
@@ -587,11 +468,11 @@ iomap_AIOS_read_end_io(struct lbio *lbio)
 
 static loff_t
 iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *data,
-		struct iomap *iomap, void **ret_lbio)
+		struct iomap *iomap)
 {
 	struct iomap_AIOS_readpage_ctx *ctx = data;
-	struct lbio *first_lbio = NULL;
-	struct lbio *last_lbio = NULL;
+	//struct lbio *first_lbio = NULL;
+	//struct lbio *last_lbio = NULL;
 
 	struct page *page = ctx->cur_page;
 	struct iomap_page *iop = iomap_page_create(inode, page);
@@ -642,20 +523,20 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 		if (ctx->is_readahead) /* same as readahead_gfp_mask */
 			gfp |= __GFP_NORETRY | __GFP_NOWARN;
 
-		if (!last_lbio){
-			last_lbio = lbio_alloc(gfp, min(BIO_MAX_PAGES, nr_vecs));
-			if (!first_lbio) {
-				first_lbio = last_lbio;
-				list_add_tail(&first_lbio->list, &current->plug->lbio_list);			
+		if (!ctx->last_lbio){
+			ctx->last_lbio = lbio_alloc(gfp, min(BIO_MAX_PAGES, nr_vecs));
+			if (!ctx->first_lbio) {
+				ctx->first_lbio = ctx->last_lbio;
+				list_add_tail(&ctx->first_lbio->list, &current->plug->lbio_list);			
 			}
 		} else {
 alloc_next_lbio:
-			last_lbio->next =
+			ctx->last_lbio->next =
 				lbio_alloc(gfp, min(BIO_MAX_PAGES, nr_vecs));
-			last_lbio = last_lbio->next;		
+			ctx->last_lbio = ctx->last_lbio->next;		
 		}
-		BUG_ON(!last_lbio);
-		ctx->lbio = last_lbio;
+		BUG_ON(!ctx->last_lbio);
+		ctx->lbio = ctx->last_lbio;
 		//ctx->lbio->bi_opf = REQ_OP_READ;
 		//if (ctx->is_readahead)
 		//	ctx->lbio->bi_opf |= REQ_RAHEAD;
@@ -665,7 +546,7 @@ alloc_next_lbio:
 			struct hd_struct *p;
 			rcu_read_lock();
 			p = __disk_get_part(bdev->bd_disk, bdev->bd_partno);
-			lbio->sector += p->start_sect;
+			ctx->lbio->sector += p->start_sect;
 			rcu_read_unlock();
 		}
 
@@ -680,7 +561,6 @@ done:
 	 * we can skip trailing ones as they will be handled in the next
 	 * iteration.
 	 */
-	*ret_lbio = (void *)first_lbio;
 
 	return pos - orig_pos + plen;
 }
@@ -709,6 +589,129 @@ iomap_AIOS_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
 
 	return NULL;
 }
+
+static loff_t
+iomap_AIOS_readpages_actor(struct inode *inode, loff_t pos, loff_t length,
+		void *data, struct iomap *iomap)
+{
+	struct iomap_AIOS_readpage_ctx *ctx = data;
+	loff_t done, ret;
+
+	for (done = 0; done < length; done += ret) {
+		if (ctx->cur_page && offset_in_page(pos + done) == 0) {
+			if (!ctx->cur_page_in_lbio)
+				unlock_page(ctx->cur_page);
+			put_page(ctx->cur_page);
+			ctx->cur_page = NULL;
+		}
+		if (!ctx->cur_page) {
+			ctx->cur_page = iomap_AIOS_next_page(inode, ctx->pages,
+					pos, length, &done);
+			if (!ctx->cur_page)
+				break;
+			ctx->cur_page_in_lbio = false;
+		}
+		ret = iomap_AIOS_readpage_actor(inode, pos + done, length - done,
+				ctx, iomap);
+	}
+
+	return done;
+}
+
+loff_t
+iomap_AIOS_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
+		const struct iomap_ops *ops, void *data, iomap_actor_t actor)
+{
+	struct iomap iomap = { 0 };
+	loff_t written = 0, ret;
+
+	/*
+	 * Need to map a range from start position for length bytes. This can
+	 * span multiple pages - it is only guaranteed to return a range of a
+	 * single type of pages (e.g. all into a hole, all mapped or all
+	 * unwritten). Failure at this point has nothing to undo.
+	 *
+	 * If allocation is required for this range, reserve the space now so
+	 * that the allocation is guaranteed to succeed later on. Once we copy
+	 * the data into the page cache pages, then we cannot fail otherwise we
+	 * expose transient stale data. If the reserve fails, we can safely
+	 * back out at this point as there is nothing to undo.
+	 */
+	ret = ops->iomap_begin(inode, pos, length, flags, &iomap);
+	if (ret)
+		return ret;
+	if (WARN_ON(iomap.offset > pos))
+		return -EIO;
+	if (WARN_ON(iomap.length == 0))
+		return -EIO;
+
+	/*
+	 * Cut down the length to the one actually provided by the filesystem,
+	 * as it might not be able to give us the whole size that we requested.
+	 */
+	if (iomap.offset + iomap.length < pos + length)
+		length = iomap.offset + iomap.length - pos;
+
+	/*
+	 * Now that we have guaranteed that the space allocation will succeed.
+	 * we can do the copy-in page by page without having to worry about
+	 * failures exposing transient data.
+	 */
+	written = actor(inode, pos, length, data, &iomap);
+
+	/*
+	 * Now the data has been copied, commit the range we've copied.  This
+	 * should not fail unless the filesystem has had a fatal error.
+	 */
+	if (ops->iomap_end) {
+		ret = ops->iomap_end(inode, pos, length,
+				     written > 0 ? written : 0,
+				     flags, &iomap);
+	}
+
+	return written ? written : ret;
+}
+
+int
+iomap_AIOS_readpages(struct address_space *mapping, struct list_head *pages,
+		unsigned nr_pages, const struct iomap_ops *ops, void **ret_lbio)
+{
+	struct iomap_AIOS_readpage_ctx ctx = {
+		.pages		= pages,
+		.is_readahead	= true,
+	};
+	loff_t pos = page_offset(list_entry(pages->prev, struct page, lru));
+	loff_t last = page_offset(list_entry(pages->next, struct page, lru));
+	loff_t length = last - pos + PAGE_SIZE, ret = 0;
+
+	while (length > 0) {
+		ret = iomap_AIOS_apply(mapping->host, pos, length, 0, ops,
+				&ctx, iomap_AIOS_readpages_actor);
+		if (ret <= 0) {
+			WARN_ON_ONCE(ret == 0);
+			goto done;
+		}
+		pos += ret;
+		length -= ret;
+	}
+	ret = 0;
+done:
+	*ret_lbio = (void *)ctx.first_lbio;	
+
+	if (ctx.cur_page) {
+		if (!ctx.cur_page_in_lbio)
+			unlock_page(ctx.cur_page);
+		put_page(ctx.cur_page);
+	}
+
+	/*
+	 * Check that we didn't lose a page due to the arcance calling
+	 * conventions..
+	 */
+	WARN_ON_ONCE(!ret && !list_empty(ctx.pages));
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iomap_AIOS_readpages);
 #endif
 
 static loff_t
