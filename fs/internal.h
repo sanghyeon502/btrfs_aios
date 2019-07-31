@@ -188,5 +188,10 @@ loff_t iomap_apply(struct inode *inode, loff_t pos, loff_t length,
 		unsigned flags, const struct iomap_ops *ops, void *data,
 		iomap_actor_t actor);
 
+#ifdef CONFIG_AIOS
+loff_t iomap_AIOS_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
+		const struct iomap_ops *ops, void *data, iomap_actor_t actor, void **lbio);
+#endif
+
 /* direct-io.c: */
 int sb_init_dio_done_wq(struct super_block *sb);
