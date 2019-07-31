@@ -65,7 +65,7 @@ iomap_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
 	 * the data into the page cache pages, then we cannot fail otherwise we
 	 * expose transient stale data. If the reserve fails, we can safely
 	 * back out at this point as there is nothing to undo.
-	 */+
+	 */
 	ret = ops->iomap_begin(inode, pos, length, flags, &iomap);
 	if (ret)
 		return ret;
@@ -564,6 +564,27 @@ iomap_AIOS_readpages_actor(struct inode *inode, loff_t pos, loff_t length,
 	return done;
 }
 
+static void
+iomap_AIOS_read_end_io(struct lbio *lbio)
+{
+	int i;
+
+	for(i = 0; i < lbio->vcnt; ++i) {
+		struct lbio_vec *bv = &lbio->vec[i];
+		struct page *page = bv->page;
+		struct iomap_page *iop = to_iomap_page(page);
+	
+		if(!lbio->status) {
+			iomap_set_range_uptodate(page, bv->bv_offset, bv->bv_len);
+		} else {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		}
+
+		iomap_read_finish(iop, page);
+	}	
+}
+
 static loff_t
 iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *data,
 		struct iomap *iomap, void **ret_lbio)
@@ -635,12 +656,12 @@ alloc_next_lbio:
 		}
 		BUG_ON(!last_lbio);
 		ctx->lbio = last_lbio;
-		ctx->lbio->bi_opf = REQ_OP_READ;
-		if (ctx->is_readahead)
-			ctx->lbio->bi_opf |= REQ_RAHEAD;
+		//ctx->lbio->bi_opf = REQ_OP_READ;
+		//if (ctx->is_readahead)
+		//	ctx->lbio->bi_opf |= REQ_RAHEAD;
 		ctx->lbio->bi_iter.bi_sector = sector;
 		ctx->lbio->bi_end_io = iomap_AIOS_read_end_io;
-		if (bdev->bd_partno) {
+		if (iomap->bdev->bd_partno) {
 			struct hd_struct *p;
 			rcu_read_lock();
 			p = __disk_get_part(bdev->bd_disk, bdev->bd_partno);
@@ -687,27 +708,6 @@ iomap_AIOS_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
 	}
 
 	return NULL;
-}
-
-static void
-iomap_AIOS_read_end_io(struct lbio *lbio)
-{
-	int i;
-
-	for(i = 0; i < lbio->vcnt; ++i) {
-		struct lbio_vec *bv = &lbio->vec[i];
-		struct page *page = bv->page;
-		struct iomap_page *iop = to_iomap_page(page);
-	
-		if(!lbio->status) {
-			iomap_set_range_uptodate(page, bv->bv_offset, bv->bv_len);
-		} else {
-			ClearPageUptodate(page);
-			SetPageError(page);
-		}
-
-		iomap_read_finish(iop, page);
-	}	
 }
 #endif
 
