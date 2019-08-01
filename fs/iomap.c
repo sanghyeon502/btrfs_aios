@@ -471,9 +471,6 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 		struct iomap *iomap)
 {
 	struct iomap_AIOS_readpage_ctx *ctx = data;
-	//struct lbio *first_lbio = NULL;
-	//struct lbio *last_lbio = NULL;
-
 	struct page *page = ctx->cur_page;
 	struct iomap_page *iop = iomap_page_create(inode, page);
 	bool is_contig = false;
@@ -500,13 +497,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 
 	ctx->cur_page_in_lbio = true;
 
-	/*
-	 * Try to merge into a previous segment if we can.
-	 */
 	sector = iomap_sector(iomap, pos);
-	if (ctx->lbio && bio_end_sector(ctx->lbio) == sector) {
-		is_contig = true;
-	}
 
 	/*
 	 * If we start a new segment we need to increase the read count, and we
@@ -516,7 +507,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 	if (iop)
 		atomic_inc(&iop->read_count);
 
-	if (!ctx->lbio || !is_contig) {
+	if (!ctx->lbio) {
 		gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
 		int nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
@@ -537,15 +528,12 @@ alloc_next_lbio:
 		}
 		BUG_ON(!ctx->last_lbio);
 		ctx->lbio = ctx->last_lbio;
-		//ctx->lbio->bi_opf = REQ_OP_READ;
-		//if (ctx->is_readahead)
-		//	ctx->lbio->bi_opf |= REQ_RAHEAD;
-		ctx->lbio->bi_iter.bi_sector = sector;
+		ctx->lbio->sector = sector;
 		ctx->lbio->bi_end_io = iomap_AIOS_read_end_io;
 		if (iomap->bdev->bd_partno) {
 			struct hd_struct *p;
 			rcu_read_lock();
-			p = __disk_get_part(bdev->bd_disk, bdev->bd_partno);
+			p = __disk_get_part(iomap->bdev->bd_disk, iomap->bdev->bd_partno);
 			ctx->lbio->sector += p->start_sect;
 			rcu_read_unlock();
 		}
