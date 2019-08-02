@@ -526,7 +526,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 alloc_next_lbio:
 			nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 			ctx->last_lbio->next =
-				lbio_alloc(mapping_gfp_constraint(page->mapping, GFP_KERNEL), min(BIO_MAX_PAGES, ((length + PAGE_SIZE - 1) >> PAGE_SHIFT) ));
+				lbio_alloc(mapping_gfp_constraint(page->mapping, GFP_KERNEL), min(BIO_MAX_PAGES, nr_vecs));
 			ctx->last_lbio = ctx->last_lbio->next;		
 		}
 		BUG_ON(!ctx->last_lbio);
