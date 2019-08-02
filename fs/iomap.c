@@ -507,11 +507,11 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 	 */
 	if (iop)
 		atomic_inc(&iop->read_count);
+	
+	gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
+	int nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
 	if (!ctx->lbio) {
-		gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
-		int nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
-
 		if (ctx->is_readahead) /* same as readahead_gfp_mask */
 			gfp |= __GFP_NORETRY | __GFP_NOWARN;
 
