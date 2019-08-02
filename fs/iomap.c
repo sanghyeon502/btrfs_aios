@@ -508,7 +508,6 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 	if (iop)
 		atomic_inc(&iop->read_count);
 	
-	gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
 	int nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
 	if (!ctx->lbio) {
@@ -526,7 +525,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 		} else {
 alloc_next_lbio:
 			ctx->last_lbio->next =
-				lbio_alloc(gfp, min(BIO_MAX_PAGES, nr_vecs));
+				lbio_alloc(mapping_gfp_constraint(page->mapping, GFP_KERNEL), min(BIO_MAX_PAGES, nr_vecs));
 			ctx->last_lbio = ctx->last_lbio->next;		
 		}
 		BUG_ON(!ctx->last_lbio);
