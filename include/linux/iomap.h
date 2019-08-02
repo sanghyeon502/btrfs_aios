@@ -126,7 +126,7 @@ int iomap_readpages(struct address_space *mapping, struct list_head *pages,
 		unsigned nr_pages, const struct iomap_ops *ops);
 #ifdef CONFIG_AIOS
 int iomap_AIOS_readpages(struct address_space *mapping, struct list_head *pages,
-		unsigned nr_pages, const struct iomap_ops *ops, void **lbio);
+		unsigned nr_pages, const struct iomap_ops *ops);
 #endif
 int iomap_set_page_dirty(struct page *page);
 int iomap_is_partially_uptodate(struct page *page, unsigned long from,

@@ -190,7 +190,7 @@ loff_t iomap_apply(struct inode *inode, loff_t pos, loff_t length,
 
 #ifdef CONFIG_AIOS
 loff_t iomap_AIOS_apply(struct inode *inode, loff_t pos, loff_t length, unsigned flags,
-		const struct iomap_ops *ops, void *data, iomap_actor_t actor, void **lbio);
+		const struct iomap_ops *ops, void *data, iomap_actor_t actor);
 #endif
 
 /* direct-io.c: */

@@ -299,7 +299,6 @@ iomap_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *data,
 	struct iomap_readpage_ctx *ctx = data;
 	struct page *page = ctx->cur_page;
 	struct iomap_page *iop = iomap_page_create(inode, page);
-	bool is_contig = false;
 	loff_t orig_pos = pos;
 	unsigned poff, plen;
 	sector_t sector;
@@ -449,17 +448,19 @@ static void
 iomap_AIOS_read_end_io(struct lbio *lbio)
 {
 	int i;
-
+	int error = blk_status_to_errno(lbio->bi_status);
+	
 	for(i = 0; i < lbio->vcnt; ++i) {
 		struct lbio_vec *bv = &lbio->vec[i];
 		struct page *page = bv->page;
 		struct iomap_page *iop = to_iomap_page(page);
-	
-		if(!lbio->status) {
-			iomap_set_range_uptodate(page, bv->bv_offset, bv->bv_len);
-		} else {
+		struct inode *inode = page->mapping->host;	
+
+		if (unlikely(error)) {
 			ClearPageUptodate(page);
 			SetPageError(page);
+		} else {
+			iomap_set_range_uptodate(page, 0, PAGE_SIZE/i_blocksize(inode));
 		}
 
 		iomap_read_finish(iop, page);
