@@ -478,6 +478,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 	loff_t orig_pos = pos;
 	unsigned poff, plen;
 	sector_t sector;
+	int nr_vecs;
 
 	if (iomap->type == IOMAP_INLINE) {
 		WARN_ON_ONCE(pos);
@@ -511,7 +512,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 
 	if (!ctx->lbio) {
 		gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
-		int nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		if (ctx->is_readahead) /* same as readahead_gfp_mask */
 			gfp |= __GFP_NORETRY | __GFP_NOWARN;
 
@@ -523,6 +524,7 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 			}
 		} else {
 alloc_next_lbio:
+			nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 			ctx->last_lbio->next =
 				lbio_alloc(mapping_gfp_constraint(page->mapping, GFP_KERNEL), min(BIO_MAX_PAGES, ((length + PAGE_SIZE - 1) >> PAGE_SHIFT) ));
 			ctx->last_lbio = ctx->last_lbio->next;		
