@@ -455,13 +455,12 @@ iomap_AIOS_read_end_io(struct lbio *lbio)
 		struct lbio_vec *bv = &lbio->vec[i];
 		struct page *page = bv->page;
 		struct iomap_page *iop = to_iomap_page(page);
-		struct inode *inode = page->mapping->host;	
 
 		if (unlikely(error)) {
 			ClearPageUptodate(page);
 			SetPageError(page);
 		} else {
-			iomap_set_range_uptodate(page, 0, PAGE_SIZE/i_blocksize(inode));
+			iomap_set_range_uptodate(page, 0, PAGE_SIZE);
 		}
 
 		iomap_read_finish(iop, page);
@@ -509,7 +508,6 @@ iomap_AIOS_readpage_actor(struct inode *inode, loff_t pos, loff_t length, void *
 	if (iop)
 		atomic_inc(&iop->read_count);
 	
-
 	if (!ctx->lbio) {
 		gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
 		nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
@@ -527,7 +525,7 @@ alloc_next_lbio:
 			nr_vecs = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 			ctx->last_lbio->next =
 				lbio_alloc(mapping_gfp_constraint(page->mapping, GFP_KERNEL), min(BIO_MAX_PAGES, nr_vecs));
-			ctx->last_lbio = ctx->last_lbio->next;		
+			ctx->last_lbio = ctx->last_lbio->next;	
 		}
 		BUG_ON(!ctx->last_lbio);
 		ctx->lbio = ctx->last_lbio;
@@ -542,7 +540,6 @@ alloc_next_lbio:
 		}
 
 	}
-
 	if(!lbio_add_page(ctx->lbio, page))
 		goto alloc_next_lbio; 
 done:
@@ -567,7 +564,7 @@ iomap_AIOS_next_page(struct inode *inode, struct list_head *pages, loff_t pos,
 			break;
 
 		list_del(&page->lru);
-
+        page->mapping = inode->i_mapping;
 		return page;
 
 		/*
@@ -692,7 +689,6 @@ done:
 	if (ctx.cur_page) {
 		if (!ctx.cur_page_in_lbio)
 			unlock_page(ctx.cur_page);
-		put_page(ctx.cur_page);
 	}
 
 	/*

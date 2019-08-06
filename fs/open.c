@@ -1073,7 +1073,7 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 			if (flags & O_AIOS) {
 				atomic_inc(&f->f_mapping->host->aios_count);
 				f->f_flags |= O_AIOS;
-				ext4_extent_preload(f->f_mapping);
+			//	ext4_extent_preload(f->f_mapping);
 			}
 #endif
 		}

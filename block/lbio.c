@@ -183,7 +183,7 @@ void AIOS_lazy_page_cache(struct address_space *mapping, struct lbio *lbio)
 		for (i = 0; i < lbio->vcnt; ++i) {
 			page = lbio->vec[i].page;
 			error = add_to_page_cache_lru_nolock(page, mapping, page->index,
-					readahead_gfp_mask(mapping));
+					GFP_NOFS);
 			if (error) {
 				if (error != -EEXIST)
 					printk(KERN_ERR "[AIOS ERROR] %s:%d page cache insertion error %d\n",
