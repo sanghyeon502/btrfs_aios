@@ -589,7 +589,6 @@ iomap_AIOS_readpages_actor(struct inode *inode, loff_t pos, loff_t length,
 		if (ctx->cur_page && offset_in_page(pos + done) == 0) {
 			if (!ctx->cur_page_in_lbio)
 				unlock_page(ctx->cur_page);
-			put_page(ctx->cur_page);
 			ctx->cur_page = NULL;
 		}
 		if (!ctx->cur_page) {

@@ -1590,7 +1590,7 @@ static int nvme_alloc_queue(struct nvme_dev *dev, int qid, int depth)
 
 #ifdef CONFIG_AIOS
 	if (dev->ctrl.instance == DEV_INSTANCE) {
-		if (qid > 0 && qid <= 4) {
+		if (qid > 0 && qid <= NUM_CORE) {
 			//struct nvme_queue **per_cpu_queue = &per_cpu(nvme_irq_queues, (qid - 1) * 2);
 			//*per_cpu_queue = nvmeq;
 			//printk(KERN_ERR "[AIOS %s] NVMe interrupt queue: %p cpu: %d qid: %d depth: %d\n",
