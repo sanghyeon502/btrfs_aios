@@ -169,6 +169,7 @@ struct lbio *lbio_alloc(gfp_t gfp_mask, unsigned int nr_iovecs)
 
 	return lbio;
 }
+EXPORT_SYMBOL(lbio_alloc);
 
 void AIOS_lazy_page_cache(struct address_space *mapping, struct lbio *lbio)
 {

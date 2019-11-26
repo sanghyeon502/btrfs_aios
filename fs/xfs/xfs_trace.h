@@ -1217,9 +1217,6 @@ DEFINE_EVENT(xfs_readpage_class, name,	\
 	TP_ARGS(inode, nr_pages))
 DEFINE_READPAGE_EVENT(xfs_vm_readpage);
 DEFINE_READPAGE_EVENT(xfs_vm_readpages);
-#ifdef CONFIG_AIOS
-DEFINE_READPAGE_EVENT(xfs_AIOS_vm_readpages);
-#endif
 
 TRACE_DEFINE_ENUM(XFS_IO_HOLE);
 TRACE_DEFINE_ENUM(XFS_IO_DELALLOC);

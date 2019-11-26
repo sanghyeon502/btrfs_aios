@@ -46,6 +46,10 @@
 #include "props.h"
 #include "qgroup.h"
 #include "dedupe.h"
+#ifdef CONFIG_AIOS
+#include <linux/lbio.h>
+#endif
+
 
 struct btrfs_iget_args {
 	struct btrfs_key *location;
@@ -8603,6 +8607,16 @@ btrfs_readpages(struct file *file, struct address_space *mapping,
 	return extent_readpages(mapping, pages, nr_pages);
 }
 
+#ifdef CONFIG_AIOS
+static int
+btrfs_AIOS_readpages(struct file *file, struct address_space *mapping,
+		struct list_head *pages, unsigned nr_pages, void **lbio)
+
+{
+	return extent_AIOS_readpages(mapping, pages, lbio);
+}
+#endif
+
 static int __btrfs_releasepage(struct page *page, gfp_t gfp_flags)
 {
 	int ret = try_release_extent_mapping(page, gfp_flags);
@@ -10815,6 +10829,9 @@ static const struct address_space_operations btrfs_aops = {
 	.writepage	= btrfs_writepage,
 	.writepages	= btrfs_writepages,
 	.readpages	= btrfs_readpages,
+#ifdef CONFIG_AIOS
+	.AIOS_readpages	= btrfs_AIOS_readpages,
+#endif
 	.direct_IO	= btrfs_direct_IO,
 	.invalidatepage = btrfs_invalidatepage,
 	.releasepage	= btrfs_releasepage,

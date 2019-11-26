@@ -23,6 +23,9 @@
 #include "rcu-string.h"
 #include "backref.h"
 #include "disk-io.h"
+#ifdef CONFIG_AIOS
+#include <linux/lbio.h>
+#endif
 
 static struct kmem_cache *extent_state_cache;
 static struct kmem_cache *extent_buffer_cache;
@@ -2626,6 +2629,75 @@ readpage_ok:
 	bio_put(bio);
 }
 
+#ifdef CONFIG_AIOS
+static void end_lbio_extent_readpage(struct lbio *lbio)
+{
+	int uptodate = !lbio->status;
+	struct extent_io_tree *tree, *failure_tree;
+	u64 offset = 0;
+	u64 start;
+	u64 end;
+	u64 len;
+	u64 extent_start = 0;
+	u64 extent_len = 0;
+	int i;
+
+	for (i = 0; i < lbio->vcnt; ++i) {
+		struct lbio_vec *bvec = &lbio->vec[i];
+		struct page *page = bvec->page;
+		struct inode *inode = page->mapping->host;
+		tree = &BTRFS_I(inode)->io_tree;
+		failure_tree = &BTRFS_I(inode)->io_failure_tree;
+
+		start = page_offset(page);
+		end = start + PAGE_SIZE - 1;
+		len = PAGE_SIZE;
+		if (likely(uptodate)) {
+			loff_t i_size = i_size_read(inode);
+			pgoff_t end_index = i_size >> PAGE_SHIFT;
+			unsigned off;
+
+			/* Zero out the end if this page straddles i_size */
+			off = offset_in_page(i_size);
+			if (page->index == end_index && off)
+				zero_user_segment(page, off, PAGE_SIZE);
+			SetPageUptodate(page);
+		} else {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		}
+		unlock_page(page);
+		offset += len;
+
+		if (unlikely(!uptodate)) {
+			if (extent_len) {
+				endio_readpage_release_extent(tree,
+							      extent_start,
+							      extent_len, 1);
+				extent_start = 0;
+				extent_len = 0;
+			}
+			endio_readpage_release_extent(tree, start,
+						      end - start + 1, 0);
+		} else if (!extent_len) {
+			extent_start = start;
+			extent_len = end + 1 - start;
+		} else if (extent_start + extent_len == start) {
+			extent_len += end + 1 - start;
+		} else {
+			endio_readpage_release_extent(tree, extent_start,
+						      extent_len, uptodate);
+			extent_start = start;
+			extent_len = end + 1 - start;
+		}
+	}
+	if (extent_len)
+		endio_readpage_release_extent(tree, extent_start, extent_len,
+					      uptodate);
+
+}
+#endif
+
 /*
  * Initialize the members up to but not including 'bio'. Use after allocating a
  * new bio by bio_alloc_bioset as it does not initialize the bytes outside of
@@ -2651,6 +2723,24 @@ struct bio *btrfs_bio_alloc(struct block_device *bdev, u64 first_byte)
 	btrfs_io_bio_init(btrfs_io_bio(bio));
 	return bio;
 }
+
+#ifdef CONFIG_AIOS
+struct lbio *btrfs_lbio_alloc(struct block_device *bdev, u64 first_byte)
+{
+	struct lbio *lbio;
+
+	lbio = lbio_alloc(GFP_NOFS, BIO_MAX_PAGES);
+	lbio->sector = first_byte >> 9;
+	if (bdev->bd_partno) {
+			struct hd_struct *p;
+			rcu_read_lock();
+			p = __disk_get_part(bdev->bd_disk, bdev->bd_partno);
+			lbio->sector += p->start_sect;
+			rcu_read_unlock();
+	}
+	return lbio;
+}
+#endif
 
 struct bio *btrfs_bio_clone(struct bio *bio)
 {
@@ -2794,6 +2884,42 @@ static int submit_extent_page(unsigned int opf, struct extent_io_tree *tree,
 
 	return ret;
 }
+
+#ifdef CONFIG_AIOS
+static int submit_AIOS_extent_page(struct page *page, u64 offset,
+				struct block_device *bdev,
+				struct lbio **first_lbio_ret, 
+				struct lbio **last_lbio_ret,
+				lbio_end_io_t end_io_func)
+{
+	int ret = 0;
+	struct lbio *lbio;
+	struct lbio *first_lbio;
+	struct lbio *last_lbio;
+
+	last_lbio = *last_lbio_ret;
+	first_lbio = *first_lbio_ret;
+	if (!last_lbio) {
+		last_lbio = btrfs_lbio_alloc(bdev, offset);
+		if (!first_lbio) {
+			first_lbio = last_lbio;
+			list_add_tail(&first_lbio->list, &current->plug->lbio_list);
+		}
+	} else {
+		last_lbio->next = btrfs_lbio_alloc(bdev, offset);
+		last_lbio = last_lbio->next;
+	}
+	BUG_ON(!last_lbio);
+	lbio = last_lbio;
+	if(!lbio_add_page(lbio, page))
+		printk(KERN_ERR "lbio add page error\n");
+	lbio->bi_end_io = end_io_func;
+	*first_lbio_ret = first_lbio;
+	*last_lbio_ret = last_lbio;
+
+	return ret;
+}
+#endif
 
 static void attach_extent_buffer_page(struct extent_buffer *eb,
 				      struct page *page)
@@ -3129,6 +3255,225 @@ static void __extent_readpages(struct extent_io_tree *tree,
 					  end, em_cached, bio,
 					  bio_flags, prev_em_start);
 }
+
+#ifdef CONFIG_AIOS
+static int __do_AIOS_readpage(struct extent_io_tree *tree,
+				struct page *page,
+				get_extent_t *get_extent,
+				struct extent_map **em_cached,
+				struct lbio **first_lbio,
+				struct lbio **last_lbio)
+{
+	struct inode *inode = page->mapping->host;
+	u64 start = page_offset(page);
+	const u64 end = start + PAGE_SIZE - 1;
+	u64 cur = start;
+	u64 extent_offset;
+	u64 last_byte = i_size_read(inode);
+	u64 block_start;
+	u64 cur_end;
+	struct extent_map *em;
+	struct block_device *bdev;
+	int ret = 0;
+	int nr = 0;
+	size_t pg_offset = 0;
+	size_t iosize;
+	size_t disk_io_size;
+	size_t blocksize = inode->i_sb->s_blocksize;
+	unsigned long this_lbio_flag = 0;
+
+	if (page->index == last_byte >> PAGE_SHIFT) {
+		char *userpage;
+		size_t zero_offset = offset_in_page(last_byte);
+
+		if (zero_offset) {
+			iosize = PAGE_SIZE - zero_offset;
+			userpage = kmap_atomic(page);
+			memset(userpage + zero_offset, 0, iosize);
+			flush_dcache_page(page);
+			kunmap_atomic(userpage);
+		}
+	}
+	while (cur <= end) {
+		u64 offset;
+
+		if (cur >= last_byte) {
+			char *userpage;
+			struct extent_state *cached = NULL;
+
+			iosize = PAGE_SIZE - pg_offset;
+			userpage = kmap_atomic(page);
+			memset(userpage + pg_offset, 0, iosize);
+			flush_dcache_page(page);
+			kunmap_atomic(userpage);
+			set_extent_uptodate(tree, cur, cur + iosize - 1,
+					    &cached, GFP_NOFS);
+			unlock_extent_cached(tree, cur,
+					     cur + iosize - 1, &cached);
+			break;
+		}
+	
+		em = __get_extent_map(inode, page, pg_offset, cur,
+				      end - cur + 1, get_extent, em_cached);
+		if (IS_ERR_OR_NULL(em)) {
+			SetPageError(page);
+			unlock_extent(tree, cur, end);
+			break;
+		}
+		extent_offset = cur - em->start;
+		BUG_ON(extent_map_end(em) <= cur);
+		BUG_ON(end < cur);
+
+		if (test_bit(EXTENT_FLAG_COMPRESSED, &em->flags)) {
+			this_lbio_flag |= EXTENT_BIO_COMPRESSED;
+			extent_set_compress_type(&this_lbio_flag,
+						 em->compress_type);
+		}
+
+		iosize = min(extent_map_end(em) - cur, end - cur + 1);
+		cur_end = min(extent_map_end(em) - 1, end);
+		iosize = ALIGN(iosize, blocksize);
+		if (this_lbio_flag & EXTENT_BIO_COMPRESSED) {
+			disk_io_size = em->block_len;
+			offset = em->block_start;
+		} else {
+			offset = em->block_start + extent_offset;
+			disk_io_size = iosize;
+		}
+		bdev = em->bdev;
+		block_start = em->block_start;
+		if (test_bit(EXTENT_FLAG_PREALLOC, &em->flags))
+			block_start = EXTENT_MAP_HOLE;
+
+		free_extent_map(em);
+		em = NULL;
+
+		/* we've found a hole, just zero and go on */
+		if (block_start == EXTENT_MAP_HOLE) {
+			char *userpage;
+			struct extent_state *cached = NULL;
+
+			userpage = kmap_atomic(page);
+			memset(userpage + pg_offset, 0, iosize);
+			flush_dcache_page(page);
+			kunmap_atomic(userpage);
+
+			set_extent_uptodate(tree, cur, cur + iosize - 1,
+					    &cached, GFP_NOFS);
+			unlock_extent_cached(tree, cur,
+					     cur + iosize - 1, &cached);
+			cur = cur + iosize;
+			pg_offset += iosize;
+			continue;
+		}
+		/* the get_extent function already copied into the page */
+		if (test_range_bit(tree, cur, cur_end,
+				   EXTENT_UPTODATE, 1, NULL)) {
+			check_page_uptodate(tree, page);
+			unlock_extent(tree, cur, cur + iosize - 1);
+			cur = cur + iosize;
+			pg_offset += iosize;
+			continue;
+		}
+		/* we have an inline extent but it didn't get marked up
+		 * to date.  Error out
+		 */
+		if (block_start == EXTENT_MAP_INLINE) {
+			SetPageError(page);
+			unlock_extent(tree, cur, cur + iosize - 1);
+			cur = cur + iosize;
+			pg_offset += iosize;
+			continue;
+		}
+		ret = submit_AIOS_extent_page(page, offset, 
+					 bdev, first_lbio, last_lbio,
+					 end_lbio_extent_readpage);
+		if (!ret) {
+			nr++;
+		} else {
+			SetPageError(page);
+			unlock_extent(tree, cur, cur + iosize - 1);
+			goto out;
+		}
+		cur = cur + iosize;
+		pg_offset += iosize;
+	}
+out:
+	if (!nr) {
+		if (!PageError(page))
+			SetPageUptodate(page);
+		unlock_page(page);
+	}
+	return ret;
+}
+
+static inline void __do_AIOS_contiguous_readpages(struct extent_io_tree *tree,
+				struct page *pages[], int nr_pages,
+				u64 start, u64 end,
+				struct extent_map **em_cached,
+				struct lbio **first_lbio,
+				struct lbio **last_lbio)
+{
+	struct inode *inode;
+	struct btrfs_ordered_extent *ordered;
+	int index;
+
+	inode = pages[0]->mapping->host;
+	while (1) {
+		lock_extent(tree, start, end);
+		ordered = btrfs_lookup_ordered_range(BTRFS_I(inode), start,
+						     end - start + 1);
+		if (!ordered)
+			break;
+		unlock_extent(tree, start, end);
+		btrfs_start_ordered_extent(inode, ordered, 1);
+		btrfs_put_ordered_extent(ordered);
+	}
+
+	for (index = 0; index < nr_pages; index++) 
+		__do_AIOS_readpage(tree, pages[index], btrfs_get_extent, em_cached,
+				first_lbio, last_lbio);
+}
+
+static void __extent_AIOS_readpages(struct extent_io_tree *tree,
+				struct page *pages[],
+				int nr_pages,
+				struct extent_map **em_cached,
+				struct lbio **first_lbio,
+				struct lbio **last_lbio)
+{
+	u64 start = 0;
+	u64 end = 0;
+	u64 page_start;
+	int index;
+	int first_index = 0;
+
+	for (index = 0; index < nr_pages; index++) {
+		page_start = page_offset(pages[index]);
+		if (!end) {
+			start = page_start;
+			end = start + PAGE_SIZE - 1;
+			first_index = index;
+		} else if (end + 1 == page_start) {
+			end += PAGE_SIZE;
+		} else {
+			__do_AIOS_contiguous_readpages(tree, &pages[first_index],
+						  index - first_index, start,
+						  end, em_cached,
+						  first_lbio, last_lbio);
+			start = page_start;
+			end = start + PAGE_SIZE - 1;
+			first_index = index;
+		}
+	}
+
+	if (end)
+		__do_AIOS_contiguous_readpages(tree, &pages[first_index],
+					  index - first_index, start,
+					  end, em_cached, 
+                      first_lbio, last_lbio);
+}
+#endif
 
 static int __extent_read_full_page(struct extent_io_tree *tree,
 				   struct page *page,
@@ -4127,6 +4472,40 @@ int extent_readpages(struct address_space *mapping, struct list_head *pages,
 		return submit_one_bio(bio, 0, bio_flags);
 	return 0;
 }
+
+#ifdef CONFIG_AIOS
+int extent_AIOS_readpages(struct address_space *mapping, struct list_head *pages,
+				void **ret_lbio)
+{
+	struct lbio *first_lbio = NULL;
+	struct lbio *last_lbio = NULL;
+	struct page *pagepool[16];
+	struct extent_map *em_cached = NULL;
+	struct extent_io_tree *tree = &BTRFS_I(mapping->host)->io_tree;
+	int nr = 0;
+
+	while (!list_empty(pages)) {
+		for (nr = 0; nr < ARRAY_SIZE(pagepool) && !list_empty(pages);) {
+			struct page *page = lru_to_page(pages);
+
+			prefetchw(&page->flags);
+			list_del(&page->lru);
+			page->mapping = mapping;
+
+			pagepool[nr++] = page;
+		}
+
+		__extent_AIOS_readpages(tree, pagepool, nr, &em_cached, &first_lbio, &last_lbio);
+	}
+
+	if (em_cached)
+		free_extent_map(em_cached);
+
+	*ret_lbio = (void *)first_lbio;
+
+	return 0;
+}
+#endif
 
 /*
  * basic invalidatepage code, this waits on any locked or writeback

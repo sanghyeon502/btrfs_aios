@@ -115,6 +115,7 @@ struct hd_struct *__disk_get_part(struct gendisk *disk, int partno)
 		return NULL;
 	return rcu_dereference(ptbl->part[partno]);
 }
+EXPORT_SYMBOL_GPL(__disk_get_part);
 
 /**
  * disk_get_part - get partition

@@ -1046,7 +1046,7 @@ static inline void nvme_handle_cqe(struct nvme_queue *nvmeq, u16 idx)
 		struct lbio *lbio = tag_to_lbio(cqe->command_id & ~NVME_AIOS);
 		lbio->status = nvme_AIOS_error_status(le16_to_cpu(cqe->status) >> 1);
 		if (lbio->status)
-			printk(KERN_ERR "[AIOS ERROR] %s:%d\n", __func__, __LINE__);
+			printk(KERN_ERR "[AIOS ERROR] %s:%d lbio status: %x\n", __func__, __LINE__,(le16_to_cpu(cqe->status) >> 1)&0x7ff);
 
 		if (lbio_is_write(lbio))
 			lbio_write_req_completion(nvmeq, lbio);
